@@ -1,0 +1,152 @@
+# Docker Compose configuration for BugHive Workers
+#
+# This file provides a complete development environment for testing workers:
+# - Redis (broker + backend)
+# - Celery Worker
+# - Celery Beat (scheduler)
+# - Flower (monitoring UI)
+#
+# Usage:
+#   docker-compose -f docker-compose.workers.yml up
+#
+# Access Flower: http://localhost:5555
+
+version: '3.8'
+
+services:
+  # Redis - Task broker and result backend
+  redis:
+    image: redis:7-alpine
+    container_name: bughive-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - bughive
+
+  # Celery Worker - Process background tasks
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bughive-worker
+    command: ./scripts/run_worker.sh
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=${DATABASE_URL}
+      - BROWSERBASE_API_KEY=${BROWSERBASE_API_KEY}
+      - BROWSERBASE_PROJECT_ID=${BROWSERBASE_PROJECT_ID}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LINEAR_API_KEY=${LINEAR_API_KEY:-}
+      - LOG_LEVEL=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+    restart: unless-stopped
+    networks:
+      - bughive
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # Celery Beat - Periodic task scheduler
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bughive-beat
+    command: ./scripts/run_beat.sh
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - LOG_LEVEL=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+    restart: unless-stopped
+    networks:
+      - bughive
+
+  # Flower - Celery monitoring UI
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bughive-flower
+    command: ./scripts/run_flower.sh
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - FLOWER_PORT=5555
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+    restart: unless-stopped
+    networks:
+      - bughive
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  bughive:
+    driver: bridge
+
+# Development Notes:
+#
+# 1. Start all services:
+#    docker-compose -f docker-compose.workers.yml up
+#
+# 2. Start only Redis (for local development):
+#    docker-compose -f docker-compose.workers.yml up redis
+#
+# 3. View logs:
+#    docker-compose -f docker-compose.workers.yml logs -f worker
+#
+# 4. Scale workers:
+#    docker-compose -f docker-compose.workers.yml up --scale worker=3
+#
+# 5. Stop all services:
+#    docker-compose -f docker-compose.workers.yml down
+#
+# 6. Remove volumes (careful - deletes Redis data):
+#    docker-compose -f docker-compose.workers.yml down -v
+#
+# Production Deployment:
+#
+# For production, use a separate Redis instance with:
+# - Persistence enabled (AOF + RDB)
+# - Password authentication
+# - TLS encryption
+# - Monitoring and alerting
+# - Regular backups
+# - High availability (Redis Sentinel or Cluster)

@@ -1,0 +1,14 @@
+# LLM client dependencies for BugHive
+# Install with: pip install -r src/llm/requirements.txt
+
+# Anthropic SDK for Claude models
+anthropic>=0.39.0
+
+# HTTP client for OpenRouter API
+httpx>=0.27.0
+
+# Retry logic with exponential backoff
+tenacity>=9.0.0
+
+# Type hints and validation (if not already in main requirements)
+typing-extensions>=4.12.0
