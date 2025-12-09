@@ -12,6 +12,7 @@ from src.models.evidence import Evidence
 from src.models.raw_issue import PageAnalysisResult, RawIssue
 
 from .prompts.analyzer import ANALYZE_PAGE_PROMPT
+from .tools import get_analyzer_tools
 
 logger = structlog.get_logger(__name__)
 
@@ -549,6 +550,7 @@ class PageAnalyzerAgent:
                 max_tokens=2048,
                 temperature=0.3,  # Lower temperature for more deterministic analysis
                 session_id=session_id,
+                tools=get_analyzer_tools(),  # Provide analyzer tools for LLM to use
             )
 
             content = response.get("content", "")

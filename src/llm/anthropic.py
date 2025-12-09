@@ -324,6 +324,107 @@ class AnthropicClient:
         logger.warning(f"Reached max tool iterations ({max_iterations})")
         return response
 
+    async def create_message_with_thinking(
+        self,
+        messages: list[dict],
+        max_tokens: int = 16000,
+        thinking_budget: int = 10000,
+        temperature: float = 0.7,
+        model: str = "claude-opus-4-5-20250514",
+        **kwargs,
+    ) -> dict:
+        """
+        Create message with extended thinking for complex reasoning tasks.
+
+        Uses Claude's extended thinking feature to expose reasoning traces
+        before providing the final answer. This is particularly useful for:
+        - Complex bug validation
+        - Strategic decision making
+        - Deep analysis tasks
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            max_tokens: Maximum tokens for final response (default: 16000)
+            thinking_budget: Token budget for thinking process (default: 10000)
+            temperature: Sampling temperature (0.0-1.0)
+            model: Model identifier (defaults to Claude Opus 4.5)
+            **kwargs: Additional parameters
+
+        Returns:
+            Dict with:
+                - content: Final answer text
+                - thinking: Reasoning trace (if present)
+                - usage: Token usage dict with input/output/thinking tokens
+                - raw_response: Full API response
+
+        Raises:
+            ValueError: If messages format is invalid
+            Exception: If API call fails
+        """
+        if not messages:
+            raise ValueError("messages cannot be empty")
+
+        # Convert to MessageParam format
+        formatted_messages = self._format_messages(messages)
+
+        # Build request with extended thinking
+        request_params = {
+            "model": model,
+            "messages": formatted_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": thinking_budget,
+            },
+        }
+
+        # Add any extra parameters
+        request_params.update(kwargs)
+
+        logger.info(
+            f"Creating message with thinking: {model} "
+            f"(max_tokens={max_tokens}, thinking_budget={thinking_budget})"
+        )
+
+        # Make API call
+        response: Message = await self.client.messages.create(**request_params)
+
+        # Extract thinking and content
+        thinking_text = None
+        content_text = ""
+
+        for block in response.content:
+            if block.type == "thinking":
+                thinking_text = block.thinking
+            elif block.type == "text":
+                content_text += block.text
+
+        # Calculate total tokens
+        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+
+        result = {
+            "content": content_text,
+            "thinking": thinking_text,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "total_tokens": total_tokens,
+            },
+            "stop_reason": response.stop_reason,
+            "raw_response": response,
+        }
+
+        logger.info(
+            f"Message with thinking completed: {total_tokens} total tokens, "
+            f"stop_reason: {result['stop_reason']}"
+        )
+
+        if thinking_text:
+            logger.debug(f"Thinking trace length: {len(thinking_text)} chars")
+
+        return result
+
 
 # Convenience function for one-off requests
 async def create_message(

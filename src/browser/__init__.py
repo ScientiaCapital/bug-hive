@@ -51,9 +51,9 @@ Example Usage:
     ```
 """
 
-from browser.client import BrowserbaseClient, BrowserbaseSessionError
-from browser.extractor import PageExtractor
-from browser.navigator import NavigationError, Navigator
+from src.browser.client import BrowserbaseClient, BrowserbaseSessionError
+from src.browser.extractor import PageExtractor
+from src.browser.navigator import NavigationError, Navigator
 
 __all__ = [
     # Client

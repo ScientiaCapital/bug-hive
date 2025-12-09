@@ -74,11 +74,17 @@ Return a JSON array of issues. Each issue must have:
   "description": "Detailed explanation of the issue and its impact",
   "confidence": 0.0-1.0,  // How confident are you this is a real issue?
   "severity": "critical|high|medium|low",
-  "reasoning": "Step-by-step explanation of how you reached this conclusion",
+  "reasoning": "Step-by-step explanation of how you identified this issue, analyzed its severity, and determined confidence level",
   "metadata": {{
     // Optional: Any additional context (line numbers, affected elements, etc.)
   }}
 }}
+
+**IMPORTANT**: The "reasoning" field must contain your detailed thought process:
+1. What evidence led you to identify this as an issue?
+2. Why did you assign this particular severity level?
+3. What factors influenced your confidence score?
+4. What user impact considerations did you make?
 
 ## Severity Guidelines
 - **critical**: Breaks core functionality, security vulnerabilities, data loss
@@ -131,8 +137,14 @@ Return as JSON:
   "user_impact": "Brief description of how this affects users",
   "affected_users": "all_users|mobile_users|specific_feature|edge_case",
   "reproducibility": "always|sometimes|rarely",
-  "reasoning": "Step-by-step explanation of your classification decision"
+  "reasoning": "Comprehensive step-by-step explanation: (1) Why this category? (2) How severity was determined? (3) Confidence rationale? (4) Priority justification? (5) User impact assessment?"
 }}
+
+**IMPORTANT**: The "reasoning" field should demonstrate clear analytical thinking:
+- Evaluate evidence systematically
+- Consider alternative classifications and explain why they were rejected
+- Explain trade-offs between severity and priority
+- Reference specific evidence that supports your conclusions
 
 Be objective and base your assessment on the evidence provided.
 Return ONLY the JSON object, no additional text.

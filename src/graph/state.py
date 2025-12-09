@@ -82,6 +82,16 @@ class BugHiveState(TypedDict):
     messages: Annotated[list, add_messages]
     """Messages for inter-agent communication and reasoning traces."""
 
+    # ===== Message Compaction =====
+    needs_compaction: bool
+    """Flag indicating if message history needs compaction."""
+
+    last_compaction_at: float | None
+    """Unix timestamp of last message compaction."""
+
+    compaction_count: int
+    """Number of times messages have been compacted in this session."""
+
     # ===== Performance Metrics =====
     start_time: float | None
     """Unix timestamp when workflow started."""
@@ -141,6 +151,11 @@ def create_initial_state(config: dict[str, Any]) -> BugHiveState:
 
         # Messages
         "messages": [],
+
+        # Message compaction
+        "needs_compaction": False,
+        "last_compaction_at": None,
+        "compaction_count": 0,
 
         # Performance metrics
         "start_time": time.time(),

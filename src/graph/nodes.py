@@ -11,9 +11,10 @@ from src.agents.analyzer import PageAnalyzerAgent
 from src.agents.classifier import BugClassifierAgent
 from src.agents.crawler import CrawlerAgent
 from src.graph.state import BugHiveState
-from src.integrations.linear_client import LinearClient
+from src.integrations.linear import LinearClient
 from src.integrations.reporter import ReportWriterAgent
 from src.llm.router import LLMRouter
+from src.utils.error_aggregator import get_error_aggregator
 from src.utils.progress_tracker import ProgressTracker
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,11 @@ Output a JSON strategy with:
 
     except Exception as e:
         logger.error(f"Error in plan_crawl: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "plan_crawl"})
+
         errors = state.get("errors", [])
         errors.append(
             {"node": "plan_crawl", "error": str(e), "timestamp": time.time()}
@@ -298,6 +304,10 @@ async def crawl_page(state: BugHiveState) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Error crawling {next_page['url']}: {e}", exc_info=True)
 
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "crawl_page", "url": next_page["url"]})
+
         # Mark page as failed
         for page in pages_discovered:
             if page["url"] == next_page["url"]:
@@ -427,6 +437,11 @@ async def analyze_page(state: BugHiveState) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error analyzing page: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "analyze_page", "url": page_data.get("url")})
+
         errors = state.get("errors", [])
         errors.append(
             {
@@ -553,6 +568,11 @@ async def classify_bugs(state: BugHiveState) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error classifying bugs: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "classify_bugs"})
+
         errors = state.get("errors", [])
         errors.append(
             {"node": "classify_bugs", "error": str(e), "timestamp": time.time()}
@@ -710,6 +730,11 @@ Output JSON:
 
     except Exception as e:
         logger.error(f"Error validating bugs: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "validate_bugs"})
+
         errors = state.get("errors", [])
         errors.append(
             {"node": "validate_bugs", "error": str(e), "timestamp": time.time()}
@@ -813,6 +838,11 @@ async def generate_reports(state: BugHiveState) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error generating reports: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "generate_reports"})
+
         errors = state.get("errors", [])
         errors.append(
             {"node": "generate_reports", "error": str(e), "timestamp": time.time()}
@@ -894,6 +924,11 @@ async def create_linear_tickets(state: BugHiveState) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error creating Linear tickets: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "create_linear_tickets"})
+
         errors = state.get("errors", [])
         errors.append(
             {
@@ -1033,6 +1068,11 @@ async def generate_summary(state: BugHiveState) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error generating summary: {e}", exc_info=True)
+
+        # Track error in aggregator
+        error_agg = get_error_aggregator(state["session_id"])
+        error_agg.add(e, context={"node": "generate_summary"})
+
         errors = state.get("errors", [])
         errors.append(
             {"node": "generate_summary", "error": str(e), "timestamp": time.time()}
@@ -1041,3 +1081,70 @@ async def generate_summary(state: BugHiveState) -> dict[str, Any]:
             "summary": {"error": str(e)},
             "errors": errors,
         }
+
+
+async def report_error_patterns(state: BugHiveState) -> dict[str, Any]:
+    """Report aggregated error patterns detected during the session.
+
+    Analyzes all errors from the session using ErrorAggregator to:
+    - Group similar errors by type and message prefix
+    - Identify systemic issues and patterns
+    - Report top error patterns with occurrence counts
+    - Add pattern analysis to the final summary
+
+    Args:
+        state: Current workflow state
+
+    Returns:
+        State updates with error pattern analysis
+    """
+    node_start = time.time()
+    logger.info(f"[{state['session_id']}] Analyzing error patterns...")
+
+    try:
+        error_agg = get_error_aggregator(state["session_id"])
+
+        # Get error patterns
+        error_summary = error_agg.get_summary()
+        error_patterns = error_agg.get_patterns(min_occurrences=2)
+
+        # Add to state summary
+        summary = state.get("summary", {})
+        summary["error_analysis"] = {
+            "total_errors": error_summary["total_errors"],
+            "unique_error_types": error_summary["unique_types"],
+            "pattern_count": error_summary["pattern_count"],
+            "detected_patterns": error_patterns,
+        }
+
+        # Log pattern findings
+        if error_patterns:
+            logger.warning(
+                f"Detected {len(error_patterns)} error patterns during session:"
+            )
+            for i, pattern in enumerate(error_patterns[:5], 1):  # Top 5 patterns
+                logger.warning(
+                    f"  {i}. {pattern['error_type']}: "
+                    f"{pattern['count']} occurrences - {pattern['message_prefix']}"
+                )
+            if len(error_patterns) > 5:
+                logger.warning(
+                    f"  ... and {len(error_patterns) - 5} more patterns"
+                )
+        else:
+            logger.info("No error patterns detected (errors are isolated)")
+
+        node_duration = time.time() - node_start
+        node_durations = state.get("node_durations", {})
+        node_durations["report_error_patterns"] = node_duration
+
+        return {
+            "summary": summary,
+            "error_analysis": error_summary,
+            "node_durations": node_durations,
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing patterns: {e}", exc_info=True)
+        # Don't fail the entire workflow on pattern analysis error
+        return {"summary": state.get("summary", {})}

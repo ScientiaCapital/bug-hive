@@ -33,6 +33,7 @@ Usage:
 """
 
 from .anthropic import AnthropicClient, create_message
+from .compactor import MessageCompactor
 from .cost_tracker import MODEL_COSTS, CostTracker, SessionStats, UsageRecord
 from .openrouter import OpenRouterClient, create_completion
 from .router import TASK_MODEL_MAP, LLMRouter, ModelTier
@@ -56,6 +57,8 @@ __all__ = [
     "SessionStats",
     # Token budget
     "TokenBudget",
+    # Message compaction
+    "MessageCompactor",
 ]
 
 __version__ = "0.1.0"

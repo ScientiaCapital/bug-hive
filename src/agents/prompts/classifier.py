@@ -41,8 +41,14 @@ Return JSON:
     "category": "...",
     "priority": "...",
     "confidence": 0.X,
-    "reasoning": "Brief explanation of classification"
-}}"""
+    "reasoning": "Detailed step-by-step reasoning: (1) Evidence analysis, (2) Category selection rationale, (3) Priority determination, (4) Confidence justification, (5) Alternative classifications considered"
+}}
+
+**IMPORTANT**: Provide comprehensive reasoning that demonstrates:
+- Analysis of all available evidence
+- Clear logical steps from evidence to conclusion
+- Consideration of edge cases and alternative interpretations
+- Justification for confidence level based on evidence quality"""
 
 DEDUPLICATE_BUGS = """Are these two bugs duplicates or variants of the same issue?
 
@@ -74,8 +80,14 @@ Return JSON:
 {{
     "is_duplicate": true/false,
     "similarity": 0.X,
-    "reasoning": "Step-by-step explanation of duplicate assessment"
-}}"""
+    "reasoning": "Thorough reasoning: (1) Comparison of symptoms, (2) Root cause analysis, (3) Evidence overlap assessment, (4) Similarity score justification, (5) Final duplicate determination with supporting details"
+}}
+
+**IMPORTANT**: Reasoning should include:
+- Point-by-point comparison of bug characteristics
+- Analysis of whether symptoms indicate same root cause
+- Evaluation of evidence overlap
+- Clear explanation of similarity score calculation"""
 
 COMPUTE_SIMILARITY = """Compute the semantic similarity between these two bug descriptions.
 
@@ -94,5 +106,11 @@ Consider similar if they describe:
 Return JSON:
 {{
     "similarity": 0.X,
-    "reasoning": "Step-by-step explanation of similarity score"
-}}"""
+    "reasoning": "Detailed reasoning process: (1) Semantic analysis of both descriptions, (2) Identification of shared concepts, (3) Evaluation of symptom overlap, (4) Assessment of root cause similarity, (5) Final similarity score calculation with justification"
+}}
+
+**IMPORTANT**: Provide transparent reasoning:
+- Break down the semantic comparison methodically
+- Identify specific shared terminology and concepts
+- Explain how overlap in symptoms affects the score
+- Justify the final similarity value with concrete examples"""

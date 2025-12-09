@@ -1,10 +1,50 @@
 """Pydantic models for crawl sessions and configuration."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class AuthMethod(str, Enum):
+    """Authentication methods for crawling."""
+
+    SESSION = "session"
+    OAUTH = "oauth"
+    API_KEY = "api_key"
+    NONE = "none"
+
+
+class PageInventory(BaseModel):
+    """Inventory of discovered pages during a crawl."""
+
+    discovered_urls: list[str] = Field(default_factory=list)
+    crawled_urls: list[str] = Field(default_factory=list)
+    failed_urls: list[str] = Field(default_factory=list)
+    skipped_urls: list[str] = Field(default_factory=list)
+
+    @property
+    def total_discovered(self) -> int:
+        """Total discovered pages."""
+        return len(self.discovered_urls)
+
+    @property
+    def total_crawled(self) -> int:
+        """Total crawled pages."""
+        return len(self.crawled_urls)
+
+    @property
+    def pending_count(self) -> int:
+        """Pages remaining to crawl."""
+        crawled_set = set(self.crawled_urls)
+        failed_set = set(self.failed_urls)
+        skipped_set = set(self.skipped_urls)
+        return len([
+            url for url in self.discovered_urls
+            if url not in crawled_set and url not in failed_set and url not in skipped_set
+        ])
 
 
 class CrawlConfig(BaseModel):

@@ -7,7 +7,7 @@ import logging
 import asyncio
 from typing import Any
 
-from langgraph.graph import Send
+from langgraph.types import Send
 from src.graph.state import BugHiveState
 from src.agents.crawler import CrawlerAgent
 from src.agents.analyzer import PageAnalyzerAgent

@@ -19,6 +19,7 @@ from src.agents.prompts.crawler import (
     PLAN_CRAWL_STRATEGY,
     SHOULD_CRAWL,
 )
+from .tools import get_crawler_tools
 
 logger = structlog.get_logger(__name__)
 
@@ -180,12 +181,14 @@ class CrawlerAgent:
             form_details=json.dumps(page_data.get("forms", []), indent=2),
         )
 
-        response = await self.llm.route_task(
-            task="extract_navigation", prompt=prompt, page_content=page_data
+        response = await self.llm.route(
+            task="extract_navigation",
+            messages=[{"role": "user", "content": prompt}],
+            tools=get_crawler_tools(),
         )
 
         try:
-            auth_info = json.loads(response.strip())
+            auth_info = json.loads(response.get("content", "").strip())
         except json.JSONDecodeError:
             logger.error("failed_to_parse_auth_analysis", response=response)
             return False
@@ -420,12 +423,12 @@ class CrawlerAgent:
             )
 
             try:
-                response = await self.llm.route_task(
+                response = await self.llm.route(
                     task="extract_navigation",
-                    prompt=prompt,
-                    page_content={"url": url},
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=get_crawler_tools(),
                 )
-                decision = json.loads(response.strip())
+                decision = json.loads(response.get("content", "").strip())
                 should_crawl = decision.get("should_crawl", True)
                 reason = decision.get("reason", "")
 
@@ -476,13 +479,13 @@ class CrawlerAgent:
                 max_depth=self.config.max_depth,
             )
 
-            response = await self.llm.route_task(
+            response = await self.llm.route(
                 task="plan_crawl_strategy",
-                prompt=prompt,
-                page_content={"links": discovered_links},
+                messages=[{"role": "user", "content": prompt}],
+                tools=get_crawler_tools(),
             )
 
-            result = json.loads(response.strip())
+            result = json.loads(response.get("content", "").strip())
             prioritized_urls = result.get("prioritized_urls", discovered_links)
             reasoning = result.get("reasoning", "")
 
