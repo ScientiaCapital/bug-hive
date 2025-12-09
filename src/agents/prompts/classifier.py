@@ -114,3 +114,22 @@ Return JSON:
 - Identify specific shared terminology and concepts
 - Explain how overlap in symptoms affects the score
 - Justify the final similarity value with concrete examples"""
+
+VALIDATE_BUG_PROMPT = """Validate this bug report for accuracy and severity.
+
+Title: {title}
+Description: {description}
+Category: {category}
+Priority: {priority}
+Steps to Reproduce:
+{steps}
+Confidence: {confidence}
+
+Respond with JSON:
+{{
+    "is_valid": true/false,
+    "validated_priority": "critical/high/medium/low",
+    "reasoning": "Explanation of validation decision",
+    "recommended_action": "fix_immediately/investigate/defer/dismiss"
+}}
+"""

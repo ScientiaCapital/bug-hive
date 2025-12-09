@@ -17,6 +17,31 @@ class ModelTier(Enum):
     FAST = "qwen/qwen-2.5-32b-instruct"
 
 
+class AllModelsFailedError(Exception):
+    """Raised when all models in fallback chain fail."""
+
+    def __init__(self, message: str, errors: list[dict]):
+        """
+        Initialize with error details from all failed attempts.
+
+        Args:
+            message: High-level error description
+            errors: List of dicts with 'tier', 'attempt', and 'error' keys
+        """
+        super().__init__(message)
+        self.errors = errors
+
+
+# Fallback chain configuration - defines which models to try if primary fails
+FALLBACK_CHAIN = {
+    ModelTier.ORCHESTRATOR: [ModelTier.REASONING, ModelTier.GENERAL],
+    ModelTier.REASONING: [ModelTier.GENERAL, ModelTier.FAST],
+    ModelTier.CODING: [ModelTier.REASONING, ModelTier.GENERAL],
+    ModelTier.GENERAL: [ModelTier.FAST],
+    ModelTier.FAST: [],  # No fallback for fastest tier
+}
+
+
 # Task-to-model mapping for intelligent routing
 TASK_MODEL_MAP = {
     # High-stakes decisions → Opus
@@ -210,35 +235,47 @@ class LLMRouter:
         """
         Route with automatic fallback on failure.
 
-        Useful for production scenarios where you want to guarantee a response.
-        Falls back to GENERAL tier by default if primary model fails.
+        DEPRECATED: Use route_with_fallback_chain() for multi-level fallback.
+        This method now uses the fallback chain internally for compatibility.
+
+        If fallback_tier is explicitly provided, it will use single-level fallback
+        for backward compatibility. Otherwise, it uses the multi-level chain.
 
         Args:
             task: Task identifier
             messages: Message list
-            fallback_tier: ModelTier to use on failure (defaults to GENERAL)
+            fallback_tier: ModelTier to use on failure (if None, uses full chain)
             **kwargs: Additional parameters for route()
 
         Returns:
             Response dict from successful call
         """
-        try:
-            return await self.route(task, messages, **kwargs)
-        except Exception as e:
-            logger.error(f"Primary model failed for task '{task}': {e}")
+        # If explicit fallback_tier provided, use old single-level behavior
+        if fallback_tier is not None:
+            try:
+                return await self.route(task, messages, **kwargs)
+            except Exception as e:
+                logger.error(f"Primary model failed for task '{task}': {e}")
+                logger.info(f"Falling back to {fallback_tier.name}")
 
-            if fallback_tier is None:
-                fallback_tier = ModelTier.GENERAL
+                response = await self._route_with_model(
+                    fallback_tier, messages, **kwargs
+                )
+                response["fallback_used"] = True
+                response["original_task"] = task
+                return response
 
-            logger.info(f"Falling back to {fallback_tier.name}")
-
-            # Use direct model call instead of mutating global TASK_MODEL_MAP (thread-safe)
-            response = await self._route_with_model(
-                fallback_tier, messages, **kwargs
-            )
-            response["fallback_used"] = True
-            response["original_task"] = task
-            return response
+        # Otherwise, use the new multi-level fallback chain
+        logger.info(
+            f"Using multi-level fallback chain for task '{task}' "
+            "(route_with_fallback called without explicit fallback_tier)"
+        )
+        return await self.route_with_fallback_chain(
+            task=task,
+            messages=messages,
+            max_retries_per_tier=2,
+            **kwargs,
+        )
 
     async def _route_with_model(
         self,
@@ -296,3 +333,98 @@ class LLMRouter:
         response["model_tier"] = model_tier.name
 
         return response
+
+    async def route_with_fallback_chain(
+        self,
+        task: str,
+        messages: list[dict],
+        max_retries_per_tier: int = 2,
+        **kwargs,
+    ) -> dict:
+        """
+        Try primary model, then each fallback in chain until success.
+
+        Implements multi-level fallback with retry logic per tier. Will attempt
+        the primary model first, then progressively fall back to cheaper/faster
+        models in the chain until one succeeds or all fail.
+
+        Args:
+            task: Task identifier to determine primary model
+            messages: List of message dicts with 'role' and 'content'
+            max_retries_per_tier: Number of retry attempts per model tier (default 2)
+            **kwargs: Additional parameters for route()
+
+        Returns:
+            Response dict with additional fields:
+                - fallback_tier: Name of tier used (None if primary succeeded)
+                - attempt: Which attempt succeeded (1-indexed)
+                - fallback_chain_used: List of tiers attempted before success
+
+        Raises:
+            AllModelsFailedError: When all models in chain fail after retries
+        """
+        model_tier = self.get_model_for_task(task)
+        chain = [model_tier] + FALLBACK_CHAIN.get(model_tier, [])
+
+        errors = []
+        attempted_tiers = []
+
+        logger.info(
+            f"Starting fallback chain for task '{task}': {[t.name for t in chain]}"
+        )
+
+        for tier_idx, tier in enumerate(chain):
+            attempted_tiers.append(tier.name)
+
+            for attempt in range(max_retries_per_tier):
+                try:
+                    logger.info(
+                        f"Attempting {tier.name} (tier {tier_idx + 1}/{len(chain)}, "
+                        f"attempt {attempt + 1}/{max_retries_per_tier})"
+                    )
+
+                    response = await self._route_with_model(tier, messages, **kwargs)
+
+                    # Add metadata about fallback usage
+                    response["fallback_tier"] = tier.name if tier != model_tier else None
+                    response["attempt"] = attempt + 1
+                    response["fallback_chain_used"] = attempted_tiers
+                    response["original_task"] = task
+
+                    if tier != model_tier:
+                        logger.info(
+                            f"Successfully fell back to {tier.name} after "
+                            f"{len(attempted_tiers) - 1} tier(s) failed"
+                        )
+                    else:
+                        logger.info(f"Primary model {tier.name} succeeded")
+
+                    return response
+
+                except Exception as e:
+                    error_info = {
+                        "tier": tier.name,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                    }
+                    errors.append(error_info)
+                    logger.warning(
+                        f"Model {tier.name} attempt {attempt + 1}/{max_retries_per_tier} "
+                        f"failed: {e}"
+                    )
+
+                    # Don't sleep on the last attempt of the last tier
+                    if not (tier_idx == len(chain) - 1 and attempt == max_retries_per_tier - 1):
+                        # Brief pause before retry to avoid hammering failed service
+                        import asyncio
+                        await asyncio.sleep(0.5)
+
+        # All models failed
+        error_summary = "\n".join(
+            f"  - {e['tier']} (attempt {e['attempt']}): {e['error']}"
+            for e in errors
+        )
+        raise AllModelsFailedError(
+            f"All models in chain failed for task '{task}':\n{error_summary}",
+            errors=errors,
+        )

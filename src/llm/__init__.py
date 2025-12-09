@@ -36,7 +36,13 @@ from .anthropic import AnthropicClient, create_message
 from .compactor import MessageCompactor
 from .cost_tracker import MODEL_COSTS, CostTracker, SessionStats, UsageRecord
 from .openrouter import OpenRouterClient, create_completion
-from .router import TASK_MODEL_MAP, LLMRouter, ModelTier
+from .router import (
+    FALLBACK_CHAIN,
+    TASK_MODEL_MAP,
+    AllModelsFailedError,
+    LLMRouter,
+    ModelTier,
+)
 from .token_budget import TokenBudget
 
 __all__ = [
@@ -44,6 +50,8 @@ __all__ = [
     "LLMRouter",
     "ModelTier",
     "TASK_MODEL_MAP",
+    "FALLBACK_CHAIN",
+    "AllModelsFailedError",
     # Clients
     "AnthropicClient",
     "OpenRouterClient",

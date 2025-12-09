@@ -1,16 +1,20 @@
 """Parallel processing capabilities for BugHive workflow.
 
-Enables fan-out/fan-in patterns for analyzing multiple pages concurrently.
+Enables fan-out/fan-in patterns for analyzing multiple pages concurrently
+and parallel bug validation with semaphore-based rate limiting.
 """
 
 import logging
 import asyncio
+import json
 from typing import Any
 
 from langgraph.types import Send
 from src.graph.state import BugHiveState
 from src.agents.crawler import CrawlerAgent
 from src.agents.analyzer import PageAnalyzerAgent
+from src.models.bug import Bug
+from src.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
@@ -354,3 +358,142 @@ def create_parallel_workflow():
     workflow.add_edge("summarize", END)
 
     return workflow.compile()
+
+
+# Parallel bug validation functions
+
+
+async def validate_single_bug(
+    bug: Bug,
+    llm_router: LLMRouter,
+    session_id: str,
+) -> dict[str, Any]:
+    """Validate a single bug using standard LLM call.
+
+    Args:
+        bug: Bug object to validate
+        llm_router: LLM router for API calls
+        session_id: Session ID for cost tracking
+
+    Returns:
+        Dict with validation results including is_valid, reasoning, cost
+    """
+    from src.agents.prompts.classifier import VALIDATE_BUG_PROMPT
+
+    # Format steps to reproduce
+    steps = "\n".join(bug.steps_to_reproduce or [])
+
+    prompt = VALIDATE_BUG_PROMPT.format(
+        title=bug.title,
+        description=bug.description,
+        category=bug.category,
+        priority=bug.priority,
+        steps=steps,
+        confidence=bug.confidence,
+    )
+
+    try:
+        response = await llm_router.route(
+            task="validate_critical_bug",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            temperature=0.3,
+            session_id=session_id,
+        )
+
+        # Parse JSON response
+        try:
+            result = json.loads(response["content"])
+        except json.JSONDecodeError:
+            logger.warning(
+                f"Failed to parse validation JSON for bug {bug.id}, "
+                f"using default valid response"
+            )
+            result = {
+                "is_valid": True,
+                "reasoning": response["content"],
+                "validated_priority": bug.priority,
+                "recommended_action": "investigate",
+            }
+
+        result["cost"] = response.get("cost", 0.0)
+        return result
+
+    except Exception as e:
+        logger.error(f"Validation failed for bug {bug.id}: {e}", exc_info=True)
+        return {
+            "is_valid": False,
+            "error": str(e),
+            "recommended_action": "retry",
+            "cost": 0.0,
+        }
+
+
+async def parallel_validate_batch(
+    bugs: list[Bug],
+    llm_router: LLMRouter,
+    session_id: str,
+    batch_size: int = 5,
+    use_extended_thinking: bool = False,
+) -> list[dict[str, Any]]:
+    """Validate multiple bugs in parallel with semaphore.
+
+    Args:
+        bugs: List of Bug objects to validate
+        llm_router: LLM router for API calls
+        session_id: Session ID for cost tracking
+        batch_size: Max concurrent validations (default 5)
+        use_extended_thinking: Use extended thinking for critical/high priority bugs
+
+    Returns:
+        List of validation results with bug_id, is_valid, reasoning, cost
+    """
+    semaphore = asyncio.Semaphore(batch_size)
+
+    async def validate_one(bug: Bug) -> dict[str, Any]:
+        """Validate one bug with semaphore control."""
+        async with semaphore:
+            try:
+                # Use extended thinking for critical/high priority bugs
+                if use_extended_thinking and bug.priority in ["critical", "high"]:
+                    from src.graph.thinking_validator import validate_bug_with_thinking
+
+                    logger.info(
+                        f"Using extended thinking for {bug.priority} priority bug {bug.id}"
+                    )
+                    result = await validate_bug_with_thinking(bug.model_dump())
+                else:
+                    result = await validate_single_bug(bug, llm_router, session_id)
+
+                return {"bug_id": str(bug.id), **result}
+
+            except Exception as e:
+                logger.error(f"Validation failed for bug {bug.id}: {e}", exc_info=True)
+                return {
+                    "bug_id": str(bug.id),
+                    "is_valid": False,
+                    "error": str(e),
+                    "recommended_action": "retry",
+                    "cost": 0.0,
+                }
+
+    logger.info(
+        f"Starting parallel validation of {len(bugs)} bugs with batch_size={batch_size}"
+    )
+
+    # Run all validations in parallel, respecting semaphore limit
+    results = await asyncio.gather(
+        *[validate_one(bug) for bug in bugs],
+        return_exceptions=False,  # Exceptions are caught in validate_one
+    )
+
+    # Calculate total cost
+    total_cost = sum(r.get("cost", 0.0) for r in results)
+    valid_count = sum(1 for r in results if r.get("is_valid"))
+
+    logger.info(
+        f"Parallel validation complete: {valid_count}/{len(bugs)} valid, "
+        f"total cost: ${total_cost:.4f}"
+    )
+
+    return results

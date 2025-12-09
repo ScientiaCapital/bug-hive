@@ -581,13 +581,14 @@ async def classify_bugs(state: BugHiveState) -> dict[str, Any]:
 
 
 async def validate_bugs(state: BugHiveState) -> dict[str, Any]:
-    """Validate high-priority bugs with Orchestrator (Opus).
+    """Validate high-priority bugs in parallel using semaphore-controlled concurrency.
 
-    Uses Claude Opus to:
+    Uses parallel validation to:
     - Verify critical/high priority bugs are legitimate
     - Adjust priorities based on business impact
     - Add strategic context and recommendations
     - Filter false positives
+    - Use extended thinking for critical/high priority bugs (optional)
 
     Args:
         state: Current workflow state
@@ -595,8 +596,11 @@ async def validate_bugs(state: BugHiveState) -> dict[str, Any]:
     Returns:
         State updates with validated bugs and priority overrides
     """
+    from src.graph.parallel import parallel_validate_batch
+    from src.models.bug import Bug
+
     node_start = time.time()
-    logger.info(f"[{state['session_id']}] Validating high-priority bugs...")
+    logger.info(f"[{state['session_id']}] Validating high-priority bugs in parallel...")
 
     validation_needed = state.get("validation_needed", [])
     if not validation_needed:
@@ -613,71 +617,71 @@ async def validate_bugs(state: BugHiveState) -> dict[str, Any]:
     classified_bugs = state.get("classified_bugs", [])
     bugs_to_validate = [b for b in classified_bugs if b["id"] in validation_needed]
 
-    logger.info(f"Validating {len(bugs_to_validate)} high-priority bugs")
+    logger.info(f"Validating {len(bugs_to_validate)} high-priority bugs in parallel")
 
     try:
         llm_router = LLMRouter()
+        config = state.get("config", {})
+
+        # Convert bug dicts to Bug objects for validation
+        bug_objects = []
+        for bug_dict in bugs_to_validate:
+            # Create a minimal Bug object for validation
+            # Note: Some fields may not be present in classified_bugs dict
+            try:
+                bug_obj = Bug(
+                    id=bug_dict["id"],
+                    session_id=state["session_id"],
+                    page_id=bug_dict.get("page_id", bug_dict.get("affected_pages", [None])[0]),
+                    title=bug_dict["title"],
+                    description=bug_dict["description"],
+                    category=bug_dict["category"],
+                    priority=bug_dict["priority"],
+                    steps_to_reproduce=bug_dict.get("steps_to_reproduce", []),
+                    confidence=bug_dict.get("confidence_score", 0.0),
+                )
+                bug_objects.append(bug_obj)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to convert bug {bug_dict['id']} to Bug object: {e}. Skipping."
+                )
+
+        # Use parallel validation with semaphore
+        use_extended_thinking = config.get("use_extended_thinking", False)
+        batch_size = config.get("validation_batch_size", 5)
+
+        validation_results = await parallel_validate_batch(
+            bugs=bug_objects,
+            llm_router=llm_router,
+            session_id=state["session_id"],
+            batch_size=batch_size,
+            use_extended_thinking=use_extended_thinking,
+        )
+
+        # Process validation results
         validated_bugs = state.get("validated_bugs", [])
         priority_override = state.get("priority_override", {})
-        total_validation_cost = 0.0
+        total_validation_cost = sum(r.get("cost", 0.0) for r in validation_results)
         llm_calls = state.get("llm_calls", [])
 
+        # Map results back to bugs
+        results_by_id = {r["bug_id"]: r for r in validation_results}
+
         for bug in bugs_to_validate:
-            validation_prompt = f"""You are validating a potential bug from an autonomous QA system.
+            bug_id = str(bug["id"])
+            validation = results_by_id.get(bug_id)
 
-**Bug Report:**
-- ID: {bug['id']}
-- Title: {bug['title']}
-- Priority: {bug['priority']}
-- Severity: {bug['severity']}
-- Category: {bug['category']}
-- Confidence: {bug.get('confidence_score', 0.0)}
+            if not validation:
+                logger.warning(f"No validation result for bug {bug_id}")
+                continue
 
-**Description:**
-{bug['description']}
-
-**Steps to Reproduce:**
-{chr(10).join(bug.get('steps_to_reproduce', []))}
-
-**Expected vs Actual:**
-- Expected: {bug.get('expected_behavior', 'N/A')}
-- Actual: {bug.get('actual_behavior', 'N/A')}
-
-**Your Task:**
-Validate this bug and provide:
-1. Is this a legitimate bug? (true/false)
-2. Is the priority correct? (critical/high/medium/low)
-3. Business impact assessment
-4. Recommended action (fix immediately/schedule/defer/dismiss)
-
-Output JSON:
-{{
-    "is_valid": true/false,
-    "validated_priority": "critical|high|medium|low",
-    "business_impact": "Description of business impact",
-    "recommended_action": "fix_immediately|schedule|defer|dismiss",
-    "validation_notes": "Additional context or concerns",
-    "confidence": 0.0-1.0
-}}
-"""
-
-            response = await llm_router.chat(
-                messages=[{"role": "user", "content": validation_prompt}],
-                task_type="orchestrator",
-                model_override="claude-opus-4-5-20250929",
-            )
-
-            validation = response.parsed_response
-            total_validation_cost += response.cost
-
+            # Track LLM call
             llm_calls.append(
                 {
                     "node": "validate_bugs",
-                    "bug_id": bug["id"],
-                    "model": response.model,
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                    "cost": response.cost,
+                    "bug_id": bug_id,
+                    "model": "parallel_validation",
+                    "cost": validation.get("cost", 0.0),
                 }
             )
 
@@ -693,17 +697,17 @@ Output JSON:
                 new_priority = validation.get("validated_priority")
                 if new_priority and new_priority != bug["priority"]:
                     validated_bug["priority"] = new_priority
-                    priority_override[bug["id"]] = new_priority
+                    priority_override[bug_id] = new_priority
                     logger.info(
-                        f"Priority override for {bug['id']}: {bug['priority']} -> {new_priority}"
+                        f"Priority override for {bug_id}: {bug['priority']} -> {new_priority}"
                     )
 
                 validated_bugs.append(validated_bug)
                 logger.info(
-                    f"Bug {bug['id']} validated: {validation.get('recommended_action')}"
+                    f"Bug {bug_id} validated: {validation.get('recommended_action')}"
                 )
             else:
-                logger.info(f"Bug {bug['id']} rejected as invalid")
+                logger.info(f"Bug {bug_id} rejected as invalid")
 
         # Add remaining non-validated bugs (medium/low priority)
         non_validated_bugs = [
@@ -716,7 +720,8 @@ Output JSON:
         node_durations["validate_bugs"] = node_duration
 
         logger.info(
-            f"[{state['session_id']}] Validated {len(bugs_to_validate)} bugs. "
+            f"[{state['session_id']}] Parallel validation complete: "
+            f"{len(bugs_to_validate)} bugs validated in {node_duration:.2f}s. "
             f"{len(validated_bugs)} total validated. Cost: ${total_validation_cost:.4f}"
         )
 
