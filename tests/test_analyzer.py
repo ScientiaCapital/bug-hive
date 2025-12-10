@@ -337,7 +337,7 @@ async def test_confidence_score_calculation(analyzer):
     # Should have average for each type
     assert "console_error" in scores
     assert "performance" in scores
-    assert scores["console_error"] == 0.85  # (0.9 + 0.8) / 2
+    assert scores["console_error"] == pytest.approx(0.85)  # (0.9 + 0.8) / 2
     assert scores["performance"] == 0.7
 
 

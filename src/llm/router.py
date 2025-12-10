@@ -1,9 +1,13 @@
 """LLM Router for BugHive - Routes tasks to optimal models for cost efficiency."""
 
+import asyncio
 import logging
 from enum import Enum
 
 from .token_budget import TokenBudget
+
+# Fallback configuration
+FALLBACK_RETRY_DELAY_SECONDS = 0.5
 
 logger = logging.getLogger(__name__)
 
@@ -416,8 +420,7 @@ class LLMRouter:
                     # Don't sleep on the last attempt of the last tier
                     if not (tier_idx == len(chain) - 1 and attempt == max_retries_per_tier - 1):
                         # Brief pause before retry to avoid hammering failed service
-                        import asyncio
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(FALLBACK_RETRY_DELAY_SECONDS)
 
         # All models failed
         error_summary = "\n".join(

@@ -446,8 +446,13 @@ class Navigator:
             bool: True if successful
 
         Raises:
+            ValueError: If neither value nor label is provided
             NavigationError: If selection fails
         """
+        # Validate before try block so ValueError isn't caught
+        if value is None and label is None:
+            raise ValueError("Either value or label must be provided")
+
         try:
             # Wait for select element
             await page.wait_for_selector(selector, state="visible", timeout=5000)
@@ -458,10 +463,8 @@ class Navigator:
             # Select option
             if value is not None:
                 await page.select_option(selector, value=value)
-            elif label is not None:
-                await page.select_option(selector, label=label)
             else:
-                raise ValueError("Either value or label must be provided")
+                await page.select_option(selector, label=label)
 
             logger.info("option_selected", selector=selector, value=value, label=label)
             return True

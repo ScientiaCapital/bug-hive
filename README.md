@@ -9,6 +9,10 @@ An autonomous QA agent system for intelligent web application testing using AI-p
 - **Multi-Agent System**: Built with LangGraph for complex workflows
 - **Modern Python Stack**: Python 3.12+ with async/await throughout
 - **Production Ready**: PostgreSQL, Redis, Celery for scalable architecture
+- **Crash Recovery**: Progress tracking with checkpointing for session recovery
+- **Multi-Level Fallback**: Automatic failover through model tiers
+- **Parallel Validation**: Concurrent bug validation with rate limiting
+- **Extended Thinking**: Claude Opus deep reasoning for critical decisions
 
 ## Tech Stack
 
@@ -172,6 +176,45 @@ BugHive uses a modern async Python architecture:
 - **PostgreSQL**: Persistent storage for test results and configurations
 - **Redis**: Caching and message broker
 - **Browserbase**: Cloud browser automation
+
+### Agent Harness Features
+
+BugHive implements best practices from [Anthropic's agent harness guidelines](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents):
+
+- **Progress Tracking**: Human-readable progress files (`{session_id}_progress.txt`) and JSON state snapshots for crash recovery
+- **Token Budget**: Character-based token estimation to prevent context overflow (no OpenAI dependencies)
+- **Message Compaction**: Automatic summarization when context grows too large
+- **Multi-Level Fallback**: `ORCHESTRATOR → REASONING → GENERAL → FAST` chain for reliability
+- **Error Aggregation**: Pattern detection for debugging systemic issues
+- **Extended Thinking**: Claude Opus deep reasoning for critical/high priority bug validation
+
+### Progress Tracking
+
+Each session generates progress files for monitoring and recovery:
+
+```
+progress/
+├── session-123_progress.txt  # Human-readable progress log
+└── session-123_state.json    # Structured state for crash recovery
+```
+
+Example progress output:
+```
+[2025-01-15T10:30:00] crawl | Pages: 5/20 | Bugs: 3 | Cost: $0.05 ETA: 180s
+[2025-01-15T10:35:00] analyze | Pages: 10/20 | Bugs: 8 | Cost: $0.12 ETA: 60s
+```
+
+### Multi-Model Strategy
+
+Cost-optimized model routing (NO OpenAI models):
+
+| Role | Model | Cost/1M tokens |
+|------|-------|----------------|
+| Orchestrator | Claude Opus 4.5 | $15 |
+| Reasoning | DeepSeek-V3 | $0.27 |
+| Coding | DeepSeek-Coder-V2 | $0.14 |
+| General | Qwen2.5-72B | $0.15 |
+| Fast | Qwen2.5-32B | $0.06 |
 
 ## Development Guidelines
 

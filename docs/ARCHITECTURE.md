@@ -684,3 +684,265 @@ volumes:
 - Cost threshold exceeded
 - High false positive rate
 - Integration failures (Linear, Browserbase)
+
+---
+
+## Agent Harness Patterns (Sprint 2)
+
+### System Prompts & Agent Personas
+
+All agents share a consistent identity through a unified system prompt:
+
+```python
+# src/agents/prompts/__init__.py
+BUGHIVE_SYSTEM_PROMPT = """
+You are DeepQA, an expert autonomous QA engineer within the BugHive system.
+Your role is to identify bugs that real users will encounter.
+
+You have access to:
+- Page DOM analysis and network monitoring
+- Performance profiling and accessibility checking
+- Screenshot evidence collection
+
+You must:
+1. Reason through evidence systematically before concluding
+2. Flag uncertainty when confidence is below 0.8
+3. Prioritize user impact over technical correctness
+4. Provide reasoning traces with your decisions
+
+When unsure, escalate to human review rather than guess.
+"""
+```
+
+### Progress Tracking & Checkpointing
+
+Human-readable progress files enable crash recovery:
+
+```python
+# src/utils/progress_tracker.py
+class ProgressTracker:
+    def __init__(self, session_id: str, output_dir: Path):
+        self.progress_file = output_dir / f"{session_id}_progress.txt"
+        self.state_file = output_dir / f"{session_id}_state.json"
+
+    def update(self, stage: str, pages_done: int, pages_total: int,
+               bugs_found: int, cost: float, eta_seconds: int | None = None):
+        """Write human-readable progress: [timestamp] stage | Pages: X/Y | Bugs: Z"""
+
+    def save_state(self, state: dict):
+        """Save structured JSON state snapshot for crash recovery."""
+```
+
+Example progress output:
+```
+[2025-01-15T10:30:00] crawl | Pages: 5/20 | Bugs: 3 | Cost: $0.05 ETA: 180s
+[2025-01-15T10:35:00] analyze | Pages: 10/20 | Bugs: 8 | Cost: $0.12 ETA: 60s
+```
+
+### Token Budget Management
+
+Prevents context overflow with character-based token estimation (no OpenAI dependencies):
+
+```python
+# src/llm/token_budget.py
+MODEL_CONTEXT_LIMITS = {
+    ModelTier.ORCHESTRATOR: 200_000,  # Claude Opus
+    ModelTier.REASONING: 64_000,      # DeepSeek-V3
+    ModelTier.CODING: 128_000,        # DeepSeek-Coder
+    ModelTier.GENERAL: 32_000,        # Qwen-72B
+    ModelTier.FAST: 32_000,           # Qwen-32B
+}
+
+class TokenBudget:
+    def estimate_tokens(self, messages: list[dict], model_family: str = "default") -> int:
+        """Estimate tokens using character-based heuristic (~4 chars/token)."""
+
+    def validate_request(self, model: ModelTier, messages: list[dict], max_tokens: int) -> bool:
+        """Return True if request fits in context window."""
+
+    def get_remaining_budget(self, model: ModelTier, messages: list[dict]) -> int:
+        """Return tokens available for response."""
+```
+
+### Tool Calling in Agents
+
+Agents have access to structured tools for browser automation:
+
+```python
+# src/agents/tools.py
+ANALYZER_TOOLS = [
+    {
+        "name": "record_issue",
+        "description": "Record a detected bug with evidence",
+        "input_schema": {...}
+    },
+    {
+        "name": "request_screenshot",
+        "description": "Request screenshot of current page state",
+        "input_schema": {...}
+    }
+]
+
+CRAWLER_TOOLS = [
+    {
+        "name": "navigate_to",
+        "description": "Navigate to a URL",
+        "input_schema": {...}
+    },
+    {
+        "name": "click_element",
+        "description": "Click on a DOM element",
+        "input_schema": {...}
+    },
+    {
+        "name": "fill_form",
+        "description": "Fill and submit a form",
+        "input_schema": {...}
+    }
+]
+```
+
+### Extended Thinking for Critical Decisions
+
+Claude Opus uses extended thinking for high-stakes validation:
+
+```python
+# src/llm/anthropic.py
+async def create_message_with_thinking(
+    self,
+    messages: list[dict],
+    max_tokens: int = 16000,
+    thinking_budget: int = 10000,
+) -> dict:
+    """Use extended thinking for complex reasoning tasks."""
+    response = await self.client.messages.create(
+        model="claude-opus-4-5-20250514",
+        max_tokens=max_tokens,
+        thinking={
+            "type": "enabled",
+            "budget_tokens": thinking_budget
+        },
+        messages=messages,
+    )
+    return {
+        "content": response.content[-1].text,
+        "thinking": response.content[0].thinking,  # Internal reasoning trace
+    }
+```
+
+### Message Compaction
+
+Summarizes old messages when context grows too large:
+
+```python
+# src/llm/compactor.py
+class MessageCompactor:
+    def __init__(self, llm_router, threshold_ratio: float = 0.7):
+        self.llm = llm_router
+        self.threshold_ratio = threshold_ratio
+
+    async def compact_if_needed(self, messages: list[dict], model: ModelTier) -> list[dict]:
+        """Keep recent messages, summarize older ones when approaching limit."""
+        if self._should_compact(messages, model):
+            summary = await self._summarize(messages[:-10])
+            return [{"role": "system", "content": f"Context: {summary}"}] + messages[-10:]
+        return messages
+```
+
+### Multi-Level Fallback Chain
+
+Automatic failover through model tiers:
+
+```python
+# src/llm/router.py
+FALLBACK_CHAIN = {
+    ModelTier.ORCHESTRATOR: [ModelTier.REASONING, ModelTier.GENERAL],
+    ModelTier.REASONING: [ModelTier.GENERAL, ModelTier.FAST],
+    ModelTier.CODING: [ModelTier.REASONING, ModelTier.GENERAL],
+    ModelTier.GENERAL: [ModelTier.FAST],
+    ModelTier.FAST: [],  # No fallback - last resort
+}
+
+FALLBACK_RETRY_DELAY_SECONDS = 0.5
+
+async def route_with_fallback_chain(self, task: str, messages: list[dict], **kwargs):
+    """Try primary model, then each fallback in chain."""
+    model_tier = self.get_model_for_task(task)
+    chain = [model_tier] + FALLBACK_CHAIN.get(model_tier, [])
+
+    errors = []
+    for tier in chain:
+        for attempt in range(max_retries_per_tier):
+            try:
+                return await self._route_with_model(tier, messages, **kwargs)
+            except Exception as e:
+                errors.append({"tier": tier.name, "error": str(e)})
+                await asyncio.sleep(FALLBACK_RETRY_DELAY_SECONDS)
+
+    raise AllModelsFailedError(f"All models failed for {task}", errors)
+```
+
+### Error Pattern Detection
+
+Aggregates similar errors for debugging:
+
+```python
+# src/utils/error_aggregator.py
+class ErrorAggregator:
+    def add(self, error: Exception, context: dict):
+        """Record error with context."""
+
+    def get_patterns(self, min_occurrences: int = 2) -> list[dict]:
+        """Return errors that occurred multiple times (systemic issues)."""
+        # Groups by (error_type, message_prefix)
+        # Returns: [{"error_type": "TimeoutError", "count": 5, "contexts": [...]}]
+
+    def get_summary(self) -> dict:
+        """Return summary: total_errors, unique_types, patterns."""
+```
+
+### Parallel Bug Validation
+
+Validates multiple bugs concurrently with semaphore-based rate limiting:
+
+```python
+# src/graph/parallel.py
+async def parallel_validate_batch(
+    bugs: list[Bug],
+    llm_router: LLMRouter,
+    session_id: str,
+    batch_size: int = 5,
+    use_extended_thinking: bool = False,
+) -> list[dict]:
+    """Validate bugs in parallel with semaphore control."""
+    semaphore = asyncio.Semaphore(batch_size)
+
+    async def validate_one(bug: Bug) -> dict:
+        async with semaphore:
+            if use_extended_thinking and bug.priority in ["critical", "high"]:
+                return await validate_bug_with_thinking(bug.model_dump())
+            return await validate_single_bug(bug, llm_router, session_id)
+
+    return await asyncio.gather(*[validate_one(bug) for bug in bugs])
+```
+
+---
+
+## Integration Tests
+
+Integration tests verify all Sprint 2 components work together:
+
+```
+tests/integration/
+├── test_agent_harness.py    # End-to-end agent workflow tests
+├── test_checkpointing.py    # Crash recovery scenarios
+└── test_fallback_chain.py   # Model failover tests
+```
+
+Key test coverage:
+- Progress tracker persistence across restarts
+- Token budget enforcement
+- Message compaction triggering
+- Fallback chain exhaustion
+- Parallel validation concurrency
+- Error pattern aggregation

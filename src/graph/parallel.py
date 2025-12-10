@@ -447,7 +447,13 @@ async def parallel_validate_batch(
 
     Returns:
         List of validation results with bug_id, is_valid, reasoning, cost
+
+    Raises:
+        ValueError: If batch_size is not positive
     """
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+
     semaphore = asyncio.Semaphore(batch_size)
 
     async def validate_one(bug: Bug) -> dict[str, Any]:
